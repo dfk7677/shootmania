@@ -95,7 +95,7 @@ class Plugin extends \ManiaLive\PluginHandler\Plugin {
 	}
 
 	function onUnLoad() {
-		Console::println('[' . date('H:i:s') . '] [UNLOAD] Admin r' . $this->getVersion() . '');
+		Console::println('[' . date('H:i:s') . '] [UNLOAD] Admin v' . $this->getVersion() . '');
 		parent::onUnload();
 	}
 
