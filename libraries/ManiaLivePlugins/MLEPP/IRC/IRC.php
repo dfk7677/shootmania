@@ -5,8 +5,8 @@
  *
  * -- MLEPP Plugin --
  * @name IRC
- * @date 09-09-2012
- * @version 0.4.0
+ * @date 22-12-2012
+ * @version 0.5.0
  * @website mlepp.trackmania.nl
  * @package MLEPP
  *
@@ -48,6 +48,7 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 
 	private $socket;
 	private $joined = false;
+	private $reconnectTimer;
 	private $i;
 
 	private $mlepp;
@@ -61,7 +62,7 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 	 */
 
 	function onInit() {
-		$version = '0.4.0';
+		$version = '0.5.0';
 		$this->setVersion($version);
 		$this->setPublicMethod('getVersion');
 		$this->setPublicMethod('tellIRC');
@@ -129,28 +130,33 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 					}
 				}
 			}
+		}else{
+			Console::println('IRC :: ERROR! -> Starter called, joined not false');
 		}
 	}
-
+	/*
+	*
+	*		Match reporting
+	*
+	*/
 	function mode_onBeginMap($chal) {
-		if(!in_array('beginRace', $this->config->disable)) {
+		if(in_array('beginRace', $this->config->disable)) {return;}
 			$map = $this->connection->getCurrentMapInfo();
 			$this->say('4Begin of the map');
 			$this->say('Map: '.Core::stripColors($map->name).' by '.Core::stripColors($map->author));
-		}
 	}
-	
 	function mode_onPoleCapture($login) {
+		if(in_array('eliteCap', $this->config->disable)) {return;}
 	$map = $this->connection->getCurrentMapInfo();
 	$this->say('15,14 PoleCapture by: '.$login.' on '.Core::stripColors($map->name).'');
 	}
-	
 	function mode_onStartRoundElite($param2) {
+		if(in_array('startEliteround', $this->config->disable)) {return;}
 	$map = $this->connection->getCurrentMapInfo();
 	$this->say('15,14 StartRound: No: '.$param2.' on '.Core::stripColors($map->name).'');
 	}
-	
 	function mode_onEndRoundElite($param2) {
+	if(in_array('endEliteround', $this->config->disable)) {return;}
 	$map = $this->connection->getCurrentMapInfo();
 	$EndRoundData = explode(';', $param2);
 	$WinSide = str_replace('WinSide:', '', $EndRoundData[0]);
@@ -169,8 +175,8 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 	$this->say('12,15 EndRound: '.$Side.' Win by elimination of all defense players on '.Core::stripColors($map->name).'');
 	}
 	}
-	
 	function mode_onHitElite($param){
+	if(in_array('eliteHit', $this->config->disable)) {return;}
 	$players = explode(';', $param);
 	$shooter = str_replace('Shooter:', '', $players[0]);
 	$victim = str_replace('Victim:', '', $players[2]);
@@ -184,8 +190,8 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 	$this->say('12,14 '.$victim.' was hit by a Rocket from '.$shooter.'');
 	}
 	}
-	
 	function mode_onFragElite($param){
+	if(in_array('eliteFrag', $this->config->disable)) {return;}
 	$players = explode(';', $param);
 	$shooter = str_replace('Shooter:', '', $players[0]);
 	$victim = str_replace('Victim:', '', $players[2]);
@@ -199,15 +205,35 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 	$this->say('4,15 '.$victim.' was killed by a Rocket from '.$shooter.'');
 	}
 	}
-
+	/*
+	*
+	*		Message Parser
+	*
+	*/
 	function onTick() {
 		if(!isset($this->i)) {
 			$this->i = 0;
 		}
+		
+		if($this->reconnectTimer < time() && $this->joined === false) {
+			if(!isset($this->reconnectTimer)) { $this->reconnectTimer = time() + 30; }
+			Console::println(date('[m/d,H:i:s]').' IRC :: Reconnecting');
+			$this->reconnect();
+			}
+
+
 
 		if($this->joined === true) {
 			stream_set_timeout($this->socket, 10);
 			stream_set_blocking($this->socket, 0);
+			$gonogo = "gogo";
+			$info = stream_get_meta_data($this->socket);
+               if (($info['timed_out'] || $info['eof'] || !$this->socket) && $gonogo != 'nogo' ) {
+					Console::println(date('[m/d,H:i:s]').' time_out: '.$info['timed_out'].' -- eof: '.$info['eof']);
+					$this->joined = FALSE;
+					$gonogo = 'nogo';
+					$this->reconnectTimer = time() + 30;
+				}
 			while(!feof($this->socket)) {
 				$data = fread($this->socket, 4096);
 				if($data == "\n" || $data == "") {
@@ -219,7 +245,7 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 					$ircuser = substr($name_buffer[0], 0, strpos($name_buffer[0], '!'));
 
 					echo $data."\n\r";
-
+					// On chat event
 					if($name_buffer[1] == 'PRIVMSG') {
 						if(!in_array('chatIRCtoTM', $this->config->disable)) {
 							if(substr($name_buffer[2], 0, 1) == '#') {
@@ -229,19 +255,12 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 								$message = str_replace($name_buffer[2].' ', '', $message);
 								$message = substr($message, 2);
                                 if (ISSET($name_buffer[5])){
-                                if ($name_buffer[5] == 'none'){$name_buffer[5] = '';}
+								if ($name_buffer[5] == 'none'){$name_buffer[5] = '';}
 								$d_message = $name_buffer[5];
-								if($message == '!version') {
-									$this->say('!version : Running MLEPP IRC Bot r'.$this->getVersion().'.');
-								} elseif($message == '!players') {
-									$this->sendPlayerCount();
-								} elseif($message == '!spectators') {
-									$this->sendSpecCount();
-								} elseif($message == '!admin serverpass '.$d_message.'') {
-									$this->sendServerpass($d_message);
-								} elseif($message == '!admin specpass '.$d_message.'') {
-									$this->sendSpecpass($d_message);
+								if (empty($d_message)) {
+								$d_message = "";
 								}
+                                    break;
 								} else {
 									if(strstr($message, 'ACTION ')) {
 										$message = str_replace('ACTION ', '', $message);
@@ -251,6 +270,85 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 									}
 								}
 							}
+						}
+					
+					}
+					// On chat general command event (ALL WORKS)
+					if($name_buffer[1] == 'PRIVMSG') {
+						// Console::println('IRC : GeneralChatCommand');
+						// Console::println( print_r($name_buffer) );
+						if(!in_array('IRCCommands', $this->config->disable)) {
+							if(substr($name_buffer[2], 0, 1) == '#') {
+								$message = $data;
+								$message = str_replace($name_buffer[0].' ', '', $message);
+								$message = str_replace($name_buffer[1].' ', '', $message);
+								$message = str_replace($name_buffer[2].' ', '', $message);
+								$message = substr($message, 2);
+                                if (ISSET($name_buffer[3])){
+								
+								switch ($name_buffer[3])	{
+									case "!version":
+										$this->say('!version : Running MLEPP IRC Bot r'.$this->getVersion().'.');
+										break;
+									case "!players":
+										$this->sendPlayerCount();
+										break;
+									case "!spectators":
+										$this->sendSpecCount();
+										break;
+									case "!pcw":
+										$filter = array('!pcw ', 'pcw');
+										$message = str_replace($filter, '', $message);
+										$this->connection->chatSendServerMessage('$f00[IRC - $fffChat$f00] [$fff'.$ircuser.'$f00] $fff'.$message);
+										break;
+									case "3on3":
+										$this->connection->chatSendServerMessage('$f00[IRC - $fffChat$f00] [$fff'.$ircuser.'$f00] $fff'.$message);
+										break;
+									case "3v3":
+										$this->connection->chatSendServerMessage('$f00[IRC - $fffChat$f00] [$fff'.$ircuser.'$f00] $fff'.$message);
+										break;
+								}
+								}
+							}
+						}
+					}
+					/*
+					*
+					*		Take !admin commands from irc
+					*
+					*/
+					if($name_buffer[1] == 'PRIVMSG' && $name_buffer[2] == $this->config->nickname && $name_buffer[3] == "!admin" && $name_buffer[4] == $this->config->adminpass) {
+						if(!in_array('IRCAdminCommands', $this->config->disable)) {
+								$message = $data;
+								$message = str_replace($name_buffer[0].' ', '', $message);
+								$message = str_replace($name_buffer[1].' ', '', $message);
+								$message = str_replace($name_buffer[2].' ', '', $message);
+								$message = str_replace($name_buffer[3].' ', '', $message);
+								$message = str_replace($name_buffer[4].' ', '', $message);
+								$message = str_replace($name_buffer[5].' ', '', $message);
+								$message = substr($message, 2);
+								// Console::println('MESSAGE :: '.$message);
+								switch ($name_buffer[5])	{
+									case "announce":
+										$this->connection->chatSendServerMessage('$f00[ANNOUNCEMENT] [$fff'.$ircuser.'$f00] $fff'.$message);
+										$text = Core::stripColors($message);
+										$this->say('Announcing : '.$text, $ircuser);
+										break;
+									case "test":
+										Console::println('IRC : test');
+										break;
+									case "pass":
+										unset($text);$text = (string) "";
+										$pass = $this->connection->getServerPassword();$pass = (string) $pass;
+										$specpass = $this->connection->getServerPasswordForSpectator();$specpass = (string) $specpass;
+										if($pass !== ""){ $text = 'Password:'.$pass.' '; }
+										if($specpass !== ""){ $text .= 'SpecPassword:'.$specpass; }
+										if($text == "") { $text = 'No passwords are set'; }
+										$this->say(  $text, $ircuser);
+										break;
+										
+								}
+							
 						}
 					}
 
@@ -270,18 +368,30 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 						$this->write('PONG '.$name_buffer[1]);
 					}
 					if ($name_buffer[0] == 'ERROR' && $name_buffer[1] == 'Closing' && $name_buffer[3] == 'Link'){
-                fclose($this->socket);
-                sleep(2);
-				$this->starter();
-					break;
+						fclose($this->socket);
+						sleep(2);
+						$this->starter();
+						break;
 					}
 				}
 			}
 		}
 	}
-	
-	function sendServerpass($param)
-	{
+	function reconnect(){
+		if ( $this->joined === FALSE){
+			$this->reconnectTimer = time() + 40 +  floor(rand(10, 30));
+			$this->socket = fsockopen($this->config->server, $this->config->port);
+			$this->write('USER '.$this->config->ident.' '.$this->config->hostname.' '.$this->config->server.' :'.$this->config->realname);
+			$this->write('NICK '.$this->config->nickname);
+			$this->starter();
+		}
+	}
+	/*
+	*
+	*		Command Resolver Functions
+	*
+	*/
+	function sendServerpass($param)	{
 		if (empty($param)) {
 			$param = "";
 		}
@@ -294,9 +404,7 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 			$say = '!server password ' . $e->getMessage();
 		}
 	}
-	
-	function sendSpecpass($param)
-	{
+	function sendSpecpass($param) {
 		if (empty($param)) {
 			$param = "";
 		}
@@ -309,11 +417,11 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 			$say = '!spec password ' . $e->getMessage();
 		}
 	}
-	
 	function sendPlayerCount() {
 		$maxplayers = $this->connection->getMaxPlayers();
 		$say = '!players ('.$this->playercount().'/'.$maxplayers['CurrentValue'].'): ';
 		if($this->playercount() == 0 || $this->playercount() == '0') {
+			if($this->config->silentOnNone){return;}
 			$say .= 'none';
 		} else {
 			$i = 0;
@@ -327,11 +435,11 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 		}
 		$this->say($say);
 	}
-
 	function sendSpecCount() {
 		$maxspectators = $this->connection->getMaxSpectators();
 		$say = '!spectators ('.$this->speccount().'/'.$maxspectators['CurrentValue'].'): ';
 		if($this->speccount() == 0 || $this->speccount() == '0') {
+			if($this->config->silentOnNone){return;}
 			$say .= 'none';
 		} else {
 			foreach($this->storage->spectators as $spectator) {
@@ -341,7 +449,6 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 		}
 		$this->say($say);
 	}
-
 	function playercount() {
 		$players = 0;
 		foreach($this->storage->players as $login => $player){
@@ -349,7 +456,6 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 		}
 		return $players;
 	}
-
 	function speccount() {
 		$players = 0;
 		foreach($this->storage->spectators as $login){
@@ -357,7 +463,23 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 		}
 		return $players;
 	}
-
+	/*
+	*
+	*		SM Server Events
+	*
+	*/
+	function onPlayerConnect($login, $isSpectator) {
+		if(!in_array('joinTMMessage', $this->config->disable)) {
+			$playerObject = $this->storage->getPlayerObject($login);
+			$this->say('4[Join]1 '.Core::stripColors($playerObject->nickName).' joined the game.');
+		}
+	}
+	function onPlayerDisconnect($login) {
+		if(!in_array('leaveTMMessage', $this->config->disable)) {
+			$playerObject = $this->storage->getPlayerObject($login);
+			$this->say('4[Leave]1 '.Core::stripColors($playerObject->nickName).' left the game.');
+		}
+	}
 	function onPlayerChat($PlayerUid, $Login, $Text, $IsRegistredCmd) {
 		if(!in_array('chatTMtoIRC', $this->config->disable)) {
 			if($IsRegistredCmd === false && $Login != $this->storage->serverLogin) {
@@ -378,36 +500,28 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 			}
 		}
 	}
-
+	/*
+	*
+	*		Plugin UnLoad Functions
+	*
+	*/
 	function onTerminate() {
 		$this->write('QUIT');
 		fclose($this->socket);
 	}
-
-	function onPlayerConnect($login, $isSpectator) {
-		if(!in_array('joinTMMessage', $this->config->disable)) {
-			$playerObject = $this->storage->getPlayerObject($login);
-			$this->say('4[Join]1 '.Core::stripColors($playerObject->nickName).' joined the game.');
-		}
-	}
-
-	function onPlayerDisconnect($login) {
-		if(!in_array('leaveTMMessage', $this->config->disable)) {
-			$playerObject = $this->storage->getPlayerObject($login);
-			$this->say('4[Leave]1 '.Core::stripColors($playerObject->nickName).' left the game.');
-		}
-	}
-
 	function onUnload() {
 		$this->onTerminate();
 		parent::onUnload();
 	}
-
+	/*
+	*
+	*		IRC Server interaction
+	*
+	*/
 	function write($data) {
 		fwrite($this->socket, $data."\r\n");
 		echo 'Write: '.$data."\r\n";
 	}
-
 	function say($message, $reciever = 'a.channels') {
 		if($reciever == 'a.channels') {
 			for($i = 0; isset($this->config->channels[$i]); $i++) {
@@ -417,7 +531,11 @@ class IRC extends \ManiaLive\PluginHandler\Plugin {
 			$this->write('PRIVMSG '.$reciever.' :'.$message);
 		}
 	}
-
+	function irc_prep2($type, $message, $nick) {
+		for($i = 0; isset($this->config->channels[$i]); $i++) {
+		$this->write('PRIVMSG '. $nick .', '. $this->config->channels[$i] .' :'.$type.''.$message);
+		}
+	}
 	/**
 	*	Public function to let other plugins announce stuff
 	*	$this->callPublicMethod('MLEPP\IRC', 'tellIRC', $ARRAY);
